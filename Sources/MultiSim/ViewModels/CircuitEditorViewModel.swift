@@ -1,5 +1,7 @@
 import SwiftUI
 import Combine
+import AppKit
+import UniformTypeIdentifiers
 import MultiSimEngine
 
 /// The central state manager for schematic editing, simulation ticking, and virtual instruments.
@@ -9,6 +11,8 @@ public final class CircuitEditorViewModel: ObservableObject {
     @Published public var circuit: Circuit
     @Published public var selectedComponentId: UUID? = nil
     @Published public var selectedWireId: UUID? = nil
+    @Published public var currentFileURL: URL? = nil
+    private var moveOrigins: [UUID: Point2D] = [:]
 
     // MARK: - Canvas State
     @Published public var zoomScale: CGFloat = 1.0
@@ -29,7 +33,7 @@ public final class CircuitEditorViewModel: ObservableObject {
     @Published public var animationPhase: Double = 0.0 // Phase for moving current dots
 
     // MARK: - Virtual Instruments
-    @Published public var showOscilloscope: Bool = true
+    @Published public var showOscilloscope: Bool = false
     @Published public var oscilloscopeChannelACompId: UUID? = nil
     @Published public var oscilloscopeChannelBCompId: UUID? = nil
     @Published public var oscilloscopeTimeScale: Double = 0.005 // 5ms per div
@@ -46,7 +50,7 @@ public final class CircuitEditorViewModel: ObservableObject {
     private var simulationTimer: AnyCancellable?
 
     public init(circuit: Circuit? = nil) {
-        let initialCircuit = circuit ?? Self.createStarterCircuit()
+        let initialCircuit = circuit ?? Circuit()
         self.circuit = initialCircuit
         self.solver = MNASolver(circuit: initialCircuit, timeStep: 1e-4)
 
@@ -163,7 +167,160 @@ public final class CircuitEditorViewModel: ObservableObject {
 
         circuit.components.append(comp)
         selectedComponentId = comp.id
+        autoConnectTouchingPins(for: comp.id)
         solver.rebuildNetlist()
+    }
+
+    /// First empty spot in the visible area, so parts added from the palette never pile up.
+    public func nextFreePosition() -> CGPoint {
+        let baseX = 200.0 - Double(panOffset.x)
+        let baseY = 160.0 - Double(panOffset.y)
+        for row in 0..<6 {
+            for col in 0..<6 {
+                let cx = baseX + Double(col) * 120.0
+                let cy = baseY + Double(row) * 100.0
+                let taken = circuit.components.contains { c in
+                    abs(c.position.x - cx) < 80.0 && abs(c.position.y - cy) < 70.0
+                }
+                if !taken {
+                    return CGPoint(x: cx, y: cy)
+                }
+            }
+        }
+        return CGPoint(x: baseX, y: baseY)
+    }
+
+    // MARK: - Moving parts
+
+    public func beginMoving(id: UUID) {
+        if let comp = circuit.components.first(where: { $0.id == id }) {
+            moveOrigins[id] = comp.position
+        }
+    }
+
+    public func dragOrigin(for id: UUID) -> Point2D? {
+        moveOrigins[id]
+    }
+
+    public func finishMovingComponent(id: UUID) {
+        moveOrigins[id] = nil
+        autoConnectTouchingPins(for: id)
+        solver.rebuildNetlist()
+        objectWillChange.send()
+    }
+
+    private func hasWire(between a: UUID, and b: UUID) -> Bool {
+        circuit.wires.contains { w in
+            (w.startPinId == a && w.endPinId == b) || (w.startPinId == b && w.endPinId == a)
+        }
+    }
+
+    /// When a part is dropped so its terminal sits exactly on another part's terminal, connect them.
+    private func autoConnectTouchingPins(for id: UUID) {
+        guard let comp = circuit.components.first(where: { $0.id == id }) else { return }
+        for pin in comp.pins {
+            let p = comp.absolutePinPosition(pinIndex: pin.index)
+            for other in circuit.components where other.id != comp.id {
+                for otherPin in other.pins {
+                    let q = other.absolutePinPosition(pinIndex: otherPin.index)
+                    let dist = hypot(p.x - q.x, p.y - q.y)
+                    if dist < 2.0 && !hasWire(between: pin.id, and: otherPin.id) {
+                        circuit.wires.append(Wire(startPinId: pin.id, endPinId: otherPin.id))
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - File: New / Open / Save
+
+    public var documentName: String {
+        currentFileURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
+    }
+
+    private func loadCircuit(_ newCircuit: Circuit, url: URL?) {
+        circuit = newCircuit
+        solver = MNASolver(circuit: newCircuit, timeStep: 1e-4)
+        currentFileURL = url
+        selectedComponentId = nil
+        selectedWireId = nil
+        cancelWiring()
+        panOffset = .zero
+        oscilloscopeChannelACompId = newCircuit.components.first(where: { $0.kind == .capacitor || $0.kind == .diode || $0.kind == .resistor })?.id
+        oscilloscopeChannelBCompId = nil
+        resetSimulation()
+    }
+
+    public func newDocument() {
+        if !circuit.components.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Start a new circuit?"
+            alert.informativeText = "The current circuit will be closed. Anything you have not saved will be lost."
+            alert.addButton(withTitle: "Discard & New")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() != .alertFirstButtonReturn { return }
+        }
+        loadCircuit(Circuit(), url: nil)
+        lastConnectedWireDescription = nil
+    }
+
+    public func openDocument() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Open a MultiSim circuit"
+        if let t = UTType(filenameExtension: "msim") {
+            panel.allowedContentTypes = [t, UTType.json]
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let loaded = try JSONDecoder().decode(Circuit.self, from: data)
+            loadCircuit(loaded, url: url)
+            lastConnectedWireDescription = "📂 Opened \(url.lastPathComponent)"
+        } catch {
+            showFileError("Could not open the file.", error)
+        }
+    }
+
+    public func saveDocument() {
+        if let url = currentFileURL {
+            write(to: url)
+        } else {
+            saveDocumentAs()
+        }
+    }
+
+    public func saveDocumentAs() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(documentName).msim"
+        panel.message = "Save your circuit"
+        if let t = UTType(filenameExtension: "msim") {
+            panel.allowedContentTypes = [t]
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        write(to: url)
+    }
+
+    private func write(to url: URL) {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(circuit)
+            try data.write(to: url, options: .atomic)
+            currentFileURL = url
+            lastConnectedWireDescription = "💾 Saved \(url.lastPathComponent)"
+        } catch {
+            showFileError("Could not save the file.", error)
+        }
+    }
+
+    private func showFileError(_ message: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 
     public func rotateSelected() {
@@ -200,6 +357,7 @@ public final class CircuitEditorViewModel: ObservableObject {
         guard let comp = circuit.components.first(where: { $0.id == componentId }),
               comp.kind == .switchSPST else { return }
         comp.stateBool.toggle()
+        objectWillChange.send()
     }
 
     // MARK: - Wiring Logic
@@ -208,8 +366,10 @@ public final class CircuitEditorViewModel: ObservableObject {
         if let draft = wireDraftStartPin {
             // If clicked different pin, complete the wire!
             if draft.pin.id != pin.id {
-                let wire = Wire(startPinId: draft.pin.id, endPinId: pin.id)
-                circuit.wires.append(wire)
+                if !hasWire(between: draft.pin.id, and: pin.id) {
+                    let wire = Wire(startPinId: draft.pin.id, endPinId: pin.id)
+                    circuit.wires.append(wire)
+                }
                 solver.rebuildNetlist()
 
                 let startName = circuit.components.first(where: { $0.id == draft.componentId })?.designator ?? "Pin"

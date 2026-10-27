@@ -22,6 +22,8 @@ public struct ComponentPaletteView: View {
             // Category list
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    toolsSection
+
                     categorySection(title: "Sources & Ground", items: [
                         (.ground, "Ground (0V)", "arrow.down.to.line"),
                         (.dcVoltageSource, "DC Voltage Source", "battery.100.bolt"),
@@ -68,6 +70,50 @@ public struct ComponentPaletteView: View {
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
+    private var toolsSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("TOOLS")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+
+            toolRow(title: "Select / Move", icon: "cursorarrow", active: !viewModel.isWireMode) {
+                viewModel.isWireMode = false
+                viewModel.cancelWiring()
+            }
+            toolRow(title: "Wire (W)", icon: "pencil.line", active: viewModel.isWireMode) {
+                viewModel.isWireMode = true
+            }
+
+            Text("Drag from a terminal dot to another dot to connect. Click a wire to select it, then Delete.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+                .padding(.top, 2)
+        }
+    }
+
+    private func toolRow(title: String, icon: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .frame(width: 16)
+                Text(title)
+                    .font(.system(size: 12))
+                Spacer()
+            }
+            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(active ? Color.white : Color.primary)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(active ? Color.accentColor : Color.primary.opacity(0.04))
+        )
+    }
+
     private func categorySection(title: String, items: [(kind: ComponentKind, name: String, icon: String)]) -> some View {
         let filtered = items.filter { item in
             searchText.isEmpty || item.name.localizedCaseInsensitiveContains(searchText)
@@ -82,30 +128,29 @@ public struct ComponentPaletteView: View {
                         .padding(.horizontal, 4)
 
                     ForEach(filtered, id: \.kind) { item in
-                        Button(action: {
-                            // Place at canvas center
-                            viewModel.addComponent(kind: item.kind, at: CGPoint(x: 320, y: 240))
-                        }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: item.icon)
-                                    .frame(width: 16)
-                                    .foregroundStyle(Color.accentColor)
-                                Text(item.name)
-                                    .font(.system(size: 12))
-                                Spacer()
-                                Image(systemName: "plus")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .padding(.vertical, 5)
-                            .padding(.horizontal, 8)
-                            .contentShape(Rectangle())
+                        HStack(spacing: 8) {
+                            Image(systemName: item.icon)
+                                .frame(width: 16)
+                                .foregroundStyle(Color.accentColor)
+                            Text(item.name)
+                                .font(.system(size: 12))
+                            Spacer()
+                            Image(systemName: "plus")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
                         }
-                        .buttonStyle(.plain)
+                        .padding(.vertical, 5)
+                        .padding(.horizontal, 8)
                         .background(
                             RoundedRectangle(cornerRadius: 4)
                                 .fill(Color.primary.opacity(0.04))
                         )
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            // Click: add at the next free spot. Drag: drop it exactly where you want.
+                            viewModel.addComponent(kind: item.kind, at: viewModel.nextFreePosition())
+                        }
+                        .draggable(item.kind.rawValue)
                     }
                 }
             }
