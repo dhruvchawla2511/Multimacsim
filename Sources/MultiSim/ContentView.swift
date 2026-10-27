@@ -2,9 +2,13 @@ import SwiftUI
 import MultiSimEngine
 
 public struct ContentView: View {
-    @StateObject private var viewModel = CircuitEditorViewModel()
+    @ObservedObject var viewModel: CircuitEditorViewModel
     @State private var showSPICEExport: Bool = false
     @State private var showPhasorMeter: Bool = false
+
+    public init(viewModel: CircuitEditorViewModel) {
+        self.viewModel = viewModel
+    }
 
     public var body: some View {
         NavigationSplitView {
@@ -62,16 +66,21 @@ public struct ContentView: View {
 
                 Divider()
 
-                // Presets Menu
-                Menu {
-                    ForEach(PresetType.allCases) { preset in
-                        Button(preset.rawValue) {
-                            viewModel.loadPreset(type: preset)
-                        }
-                    }
-                } label: {
-                    Label("Examples", systemImage: "folder")
+                // File: New / Open / Save (like a paint program)
+                Button(action: { viewModel.newDocument() }) {
+                    Label("New", systemImage: "doc.badge.plus")
                 }
+                .help("New blank circuit (Cmd+N)")
+
+                Button(action: { viewModel.openDocument() }) {
+                    Label("Open", systemImage: "folder")
+                }
+                .help("Open a saved circuit (Cmd+O)")
+
+                Button(action: { viewModel.saveDocument() }) {
+                    Label("Save", systemImage: "square.and.arrow.down")
+                }
+                .help("Save circuit (Cmd+S)")
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
@@ -146,6 +155,7 @@ public struct ContentView: View {
         .sheet(isPresented: $viewModel.showDiagnosticsSheet) {
             CircuitDiagnosticsSheet(viewModel: viewModel)
         }
+        .navigationTitle(viewModel.documentName)
         .frame(minWidth: 1050, minHeight: 700)
     }
 }
