@@ -1,4 +1,4 @@
-# MULTIMACSIM.v1.1 ⚡️
+# MULTIMACSIM.v1 ⚡️
 ### Native macOS Circuit Simulator — B.Tech Year 1 Electrical Engineering Edition
 
 A high-performance, native macOS schematic capture and SPICE circuit simulation application built in **Swift 6** and **SwiftUI**.
@@ -25,7 +25,7 @@ Designed specifically to cover the entire curriculum of **B.Tech 1st Year Basic 
 
 ---
 
-## How to Run MULTIMACSIM.v1.1
+## How to Run MULTIMACSIM.v1
 
 ```bash
 cd MultiSim
